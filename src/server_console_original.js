@@ -354,6 +354,7 @@
     ranks: {
       create: null,
       delete: null,
+      list: null,
       exist: null,
       get: null,
       add: null,
@@ -390,10 +391,15 @@
     split: null,
     resolveNames: null,
     playersTokenError: null,
+    resolveOneName: null,
+    onePlayerTokenError: null,
+    tokenError: null,
 
     _playerDataById: Object.create(null),
     _operationId: 0,
   };
+  const _TS = globalThis.TS;
+  const _PT = globalThis.PT;
 
   const _commands = _SC.commands;
   const _nameById = _SC.playerNameById;
@@ -418,8 +424,7 @@
     _established = false;
   };
 
-  // supports: \[  \]  \\  \n  \r  \t
-  const _UNESCAPE = /\\([\\\[\]nrt])/g;
+  const _UNESCAPE = /\\([\\\[\]nrt])/g; // supports: \[  \]  \\  \n  \r  \t
   const _unescapeRepl = (_match, char) => {
     if (char === "n") return "\n";
     if (char === "r") return "\r";
@@ -542,7 +547,43 @@
 
     return tokens;
   };
+  const _maskToNames = (perms) => {
+    const names = [];
+    for (let word = 0; word < 2; word++) {
+      let mask = perms[word] >>> 0;
+      while (mask) {
+        const lsb = mask & -mask;
+        const bit = 31 - Math.clz32(lsb);
+        names.push(_nameByMaskIndex[(word << 5) + bit]);
+        mask ^= lsb;
+      }
+    }
+    return names;
+  };
+  const _makeHelpInfo = () => {
+    let info = "";
+    for (const name in _commands) {
+      const command = _commands[name];
+      const _default = command._default;
+      let defaults = "| ";
+      for (const tokenKey in _default) {
+        const tokenValue = _default[tokenKey];
+        if (typeof tokenValue === "string") {
+          defaults += tokenKey + ":\"" + tokenValue + "\" | "
+        } else {
+          defaults += tokenKey + ":" + tokenValue + " | "
+        }
+      }
+      info += "- " + command._desc + "\n   " + defaults + "\n";
+    }
+    return info;
+  };
+
   const _resolvePlayerNames = _SC.resolveNames = (userId, str) => {
+    if (str == null) {
+      return [[], [], []];
+    }
+
     const tokens = _split(str);
 
     const include = {}; // id -> 1
@@ -603,8 +644,9 @@
       }
       for (let i = 0; i < numPlayers; i++) {
         const id = playerIds[i];
-        if (_nameById[id].indexOf(token) !== -1) {
-          if (++matchCount > 1) break;
+        const name = _nameById[id];
+        if (name && name.indexOf(token) !== -1) {
+          if (++matchCount > 1) { break; }
           matchId = id;
         }
       }
@@ -646,24 +688,75 @@
       api.sendMessage(userId, "Server Console: \"/" + commandName + "\": Invalid players: " + resolvedIds[2].join(", "), { color: "#fcd373" });
     }
     if (resolvedIds[0].length === 0) {
-      api.sendMessage(userId, "Server Console: \"/" + commandName + "\": No players found.", { color: "#fcd373" });
+      api.sendMessage(userId, "Server Console: \"/" + commandName + "\": No valid players found.", { color: "#fcd373" });
       return true;
     }
     return false;
   };
+  _SC.resolveOneName = (userId, str) => {
+    if (str == null) {
+      return "2";
+    } 
 
-  const _maskToNames = (perms) => {
-    const out = [];
-    for (let word = 0; word < 2; word++) {
-      let mask = perms[word] >>> 0;
-      while (mask) {
-        const lsb = mask & -mask;
-        const bit = 31 - Math.clz32(lsb);
-        out.push(_nameByMaskIndex[(word << 5) + bit]);
-        mask ^= lsb;
+    if (str === "me") {
+      return userId;
+    }
+    if (str === "all") {
+      return "1" + str;
+    }
+
+    let matchId = _idByName[str];
+    let matchCount = 0;
+
+    // 1) exact match (case-sensitive)
+    if (matchId !== undefined) {
+      return matchId;
+    }
+
+    // 2) partial match (case-sensitive)
+    if (str.length < 4) {
+      return "0" + str;
+    }
+
+    const playerIds = _PT.getPlayerIdsUnsafe();
+    const numPlayers = playerIds.length;
+
+    for (let i = 0; i < numPlayers; i++) {
+      const id = playerIds[i];
+      const name = _nameById[id];
+      if (name && name.indexOf(str) !== -1) {
+        if (++matchCount > 1) { break; }
+        matchId = id;
       }
     }
-    return out;
+
+    if (matchCount === 1) {
+      return matchId;
+    }
+    if (matchCount === 0) {
+      return "0" + str;
+    }
+    return "1" + str;
+  };
+  _SC.onePlayerTokenError = (commandName, userId, resolvedOneId) => {
+    if (resolvedOneId[0] === "1") {
+      api.sendMessage(userId, "Server Console: \"/" + commandName + "\": Multiple players: " + resolvedOneId.slice(1), { color: "#fcd373" });
+      return true;
+    } else if (resolvedOneId[0] === "0") {
+      api.sendMessage(userId, "Server Console: \"/" + commandName + "\": Invalid player: " + resolvedOneId.slice(1), { color: "#fcd373" });
+      return true;
+    } else if (resolvedOneId[0] === "2") {
+      api.sendMessage(userId, "Server Console: \"/" + commandName + "\": Valid player name required", { color: "#fcd373" });
+      return true;
+    }
+    return false;
+  };
+  _SC.tokenError = (commandName, userId, condition, message) => {
+    if (condition) {
+      api.sendMessage(userId, "Server Console: \"/" + commandName + "\": " + message, { color: "#fcd373" });
+      return true;
+    }
+    return false;
   };
 
   _ranks.create = (rankName, commandNames) => {
@@ -682,6 +775,13 @@
       return true;
     }
     return false;
+  };
+  _ranks.list = () => {
+    const names = [];
+    for (const name in _maskByRank) {
+      names.push(name);
+    }
+    return names;
   };
   _ranks.exist = (rankName) => {
     return !!_maskByRank[rankName];
@@ -738,8 +838,8 @@
       return false;
     }
     const data = _dataById[playerId];
+    data.perms = rankPerms.slice();
     data.rank = rankName;
-    data.perms = rankPerms;
     return true;
   };
   _perms.has = (playerDbId, commandName) => {
@@ -796,60 +896,87 @@
     return true;
   };
 
-  _commands.cmdout = {
-    // default
-    players: "me",
-    enabled: false,
-    delay: 0,
-    interval: 0,
-
-    // [cmdout] [players] [enabled] [delay] [interval]
+  _commands.help = {
+    _name: "help",
+    _desc: "/help [players] [delay]",
+    _default: {
+      players: "me",
+      delay: 0,
+    },
     _cmd: function (userId, tokens) {
       const command = this;
+      const _default = command._default;
 
-      const resolvedIds = _resolvePlayerNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? command.players : tokens[1]);
-      if (_playersTokenError("cmdout", userId, resolvedIds)) {
+      const resolvedIds = _resolvePlayerNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+      if (_playersTokenError(command._name, userId, resolvedIds)) {
         return "Error";
       }
 
-      const enabled = ((tokens[2] === undefined || tokens[2] === ".") ? command.enabled : (tokens[2] !== "false" && tokens[2] !== "0"));
-
-      const delay = ((tokens[3] === undefined || tokens[3] === ".") ? command.delay : tokens[3]) | 0;
-
-      const interval = ((tokens[4] === undefined || tokens[4] === ".") ? command.interval : tokens[4]) | 0;
+      const delay = ((tokens[2] === undefined || tokens[2] === ".") ? _default.delay : tokens[2]) | 0;
 
       const groupId = "SC" + (++_SC._operationId);
-      command._run(resolvedIds[0], enabled, delay, interval, groupId);
+      command._run(resolvedIds[0], delay, groupId);
       return groupId;
     },
-    _run: function (targetIds, enabled, delay, interval, groupId) {
-      const _TS = globalThis.TS;
-      const _PT = globalThis.PT;
-      const _data = _dataById;
+    _run: function (targetIds, delay, groupId) {
+      const info = _makeHelpInfo();
       let i = 0, n = targetIds.length;
-      if (!delay && !interval) {
+      if (!delay) {
         while (i < n) {
-          _data[targetIds[i]].showCmdOut = enabled;
+          api.sendMessage(targetIds[i], info, { color: "#84e0ff" });
           i++;
         }
-      } else if (interval) {
-        _TS.run(function repeater() {
-          if (i >= n) {
-            return;
-          }
-          const playerId = targetIds[i];
-          if (_PT.checkValid[playerId]) {
-            _data[playerId].showCmdOut = enabled;
-          }
-          i++;
-          _TS.run(repeater, interval, groupId);
-        }, delay, groupId);
       } else {
         _TS.run(() => {
           while (i < n) {
             const playerId = targetIds[i];
             if (_PT.checkValid[playerId]) {
-              _data[playerId].showCmdOut = enabled;
+              api.sendMessage(playerId, info, { color: "#84e0ff" });
+            }
+            i++;
+          }
+        }, delay, groupId);
+      }
+    },
+  };
+  _commands.cmdout = {
+    _name: "cmdout",
+    _desc: "/cmdout [players] [enabled] [delay]",
+    _default: {
+      players: "me",
+      enabled: false,
+      delay: 0,
+    },
+    _cmd: function (userId, tokens) {
+      const command = this;
+      const _default = command._default;
+
+      const resolvedIds = _resolvePlayerNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+      if (_playersTokenError(command._name, userId, resolvedIds)) {
+        return "Error";
+      }
+
+      const enabled = ((tokens[2] === undefined || tokens[2] === ".") ? _default.enabled : (tokens[2] !== "false" && tokens[2] !== "0"));
+
+      const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+      const groupId = "SC" + (++_SC._operationId);
+      command._run(resolvedIds[0], enabled, delay, groupId);
+      return groupId;
+    },
+    _run: function (targetIds, enabled, delay, groupId) {
+      let i = 0, n = targetIds.length;
+      if (!delay) {
+        while (i < n) {
+          _dataById[targetIds[i]].showCmdOut = enabled;
+          i++;
+        }
+      } else {
+        _TS.run(() => {
+          while (i < n) {
+            const playerId = targetIds[i];
+            if (_PT.checkValid[playerId]) {
+              _dataById[playerId].showCmdOut = enabled;
             }
             i++;
           }
@@ -858,23 +985,25 @@
     },
   };
   _commands.cancel = {
-    // default
-    delay: 0,
-
-    // [cancel] [commandGroupId] [delay]
+    _name: "cancel",
+    _desc: "/cancel [commandGroupId] [delay]",
+    _default: {
+      commandGroupId: "-last executed per user-",
+      delay: 0,
+    },
     _cmd: function (userId, tokens) {
       const command = this;
+      const _default = command._default;
 
       let commandGroupId = (tokens[1] === undefined || tokens[1] === ".") ? _dataById[userId].lastCmdGroupId : tokens[1];
 
-      const delay = (tokens[2] === undefined || tokens[2] === ".") ? command.delay : tokens[2];
+      const delay = ((tokens[2] === undefined || tokens[2] === ".") ? _default.delay : tokens[2]) | 0;
 
       const groupId = "SC" + (++_SC._operationId);
       command._run(commandGroupId, delay, groupId);
       return groupId;
     },
     _run: function (commandGroupId, delay, groupId) {
-      const _TS = globalThis.TS;
       if (!delay) {
         _TS.stop(commandGroupId);
       } else {
@@ -937,17 +1066,22 @@
     let out = null;
     if (command) {
       if (data.perms[command._word] & command._bit) {
-        out = command._cmd(userId, tokens);
+        try {
+          out = command._cmd(userId, tokens);
+        } catch (error) {
+          out = "Error";
+          api.sendMessage(userId, "Server Console: \"/" + name + "\" execution: " + error.name + ": " + error.message, { color: "#ff9d87" });
+        }
         if (out !== "Error") {
           data.lastCmdGroupId = out;
         }
       } else {
         out = "AccessDenied";
-        api.sendMessage(userId, "Server Console: \"/" + name + "\": Access denied.");
+        api.sendMessage(userId, "Server Console: \"/" + name + "\": Access denied", { color: "#ff9d87" });
       }
     }
     if (data.showCmdOut) {
-      api.sendMessage(userId, out);
+      api.sendMessage(userId, out, { color: "#2eeb82" });
     }
     return out;
   };
@@ -957,50 +1091,37 @@
 }
 
 SC.commands.kick = {
-  // default
-  players: "",
-  message: "Server Console: You were kicked.",
-  delay: 0,
-  interval: 0,
-
-  // [kick] [players] [message] [delay] [interval]
+  _name: "kick",
+  _desc: "/kick [players] [message] [delay]",
+  _default: {
+    players: null,
+    message: "Server Console: You were kicked.",
+    delay: 0,
+  },
   _cmd: function (userId, tokens) {
     const command = this;
+    const _default = command._default;
 
-    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? command.players : tokens[1]);
-    if (SC.playersTokenError("kick", userId, resolvedIds)) {
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
       return "Error";
     }
 
-    const message = (tokens[2] === undefined || tokens[2] === ".") ? command.message : tokens[2];
+    const message = (tokens[2] === undefined || tokens[2] === ".") ? _default.message : tokens[2];
 
-    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? command.delay : tokens[3]) | 0;
-
-    const interval = ((tokens[4] === undefined || tokens[4] === ".") ? command.interval : tokens[4]) | 0;
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
 
     const groupId = "SC" + (++SC._operationId);
-    command._run(resolvedIds[0], message, delay, interval, groupId);
+    command._run(resolvedIds[0], message, delay, groupId);
     return groupId;
   },
-  _run: function (targetIds, message, delay, interval, groupId) {
+  _run: function (targetIds, message, delay, groupId) {
     let i = 0, n = targetIds.length;
-    if (!delay && !interval) {
+    if (!delay) {
       while (i < n) {
         api.kickPlayer(targetIds[i], message);
         i++;
       }
-    } else if (interval) {
-      TS.run(function repeater() {
-        if (i >= n) {
-          return;
-        }
-        const playerId = targetIds[i];
-        if (PT.checkValid[playerId]) {
-          api.kickPlayer(playerId, message);
-        }
-        i++;
-        TS.run(repeater, interval, groupId);
-      }, delay, groupId);
     } else {
       TS.run(() => {
         while (i < n) {
@@ -1014,66 +1135,52 @@ SC.commands.kick = {
     }
   },
 };
-void 0;
 
 SC.commands.give = {
-  // default
-  players: "me",
-  item: "",
-  amount: 1,
-  delay: 0,
-  interval: 0,
-
-  // [give] [players] [item] [amount] [delay] [interval]
+  _name: "give",
+  _desc: "/give [players] [item] [amount] [delay]",
+  _default: {
+    players: "me",
+    item: null,
+    amount: 1,
+    delay: 0,
+  },
   _cmd: function (userId, tokens) {
     const command = this;
+    const _default = command._default;
 
-    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? command.players : tokens[1]);
-    if (SC.playersTokenError("give", userId, resolvedIds)) {
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
       return "Error";
     }
 
-    let itemName = (tokens[2] === undefined || tokens[2] === ".") ? command.item : tokens[2];
+    let itemName = (tokens[2] === undefined || tokens[2] === ".") ? _default.item : tokens[2];
     try {
       itemName = api.getInitialItemMetadata(itemName).name;
     } catch {
-      api.sendMessage(userId, "Server Console: \"/give\": Invalid item: " + itemName, { color: "#fcd373" });
+      SC.tokenError(command._name, userId, true, "Invalid item: " + itemName);
       return "Error";
     }
 
-    const amount = ((tokens[3] === undefined || tokens[3] === ".") ? command.amount : tokens[3]) | 0;
-    if (amount <= 0) {
-      api.sendMessage(userId, "Server Console: \"/give\": Invalid amount: " + amount, { color: "#fcd373" });
+    const amountRaw = (tokens[3] === undefined || tokens[3] === ".") ? _default.amount : tokens[3];
+    const amount = Number.parseInt(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount || amount <= 0), "Invalid amount: " + amountRaw)) {
       return "Error";
     }
 
-    const delay = ((tokens[4] === undefined || tokens[4] === ".") ? command.delay : tokens[4]) | 0;
-
-    const interval = ((tokens[5] === undefined || tokens[5] === ".") ? command.interval : tokens[5]) | 0;
+    const delay = ((tokens[4] === undefined || tokens[4] === ".") ? _default.delay : tokens[4]) | 0;
 
     const groupId = "SC" + (++SC._operationId);
-    command._run(resolvedIds[0], itemName, amount, delay, interval, groupId);
+    command._run(resolvedIds[0], itemName, amount, delay, groupId);
     return groupId;
   },
-  _run: (targetIds, itemName, amount, delay, interval, groupId) => {
+  _run: function (targetIds, itemName, amount, delay, groupId) {
     let i = 0, n = targetIds.length;
-    if (!delay && !interval) {
+    if (!delay) {
       while (i < n) {
         api.giveItem(targetIds[i], itemName, amount);
         i++;
       }
-    } else if (interval) {
-      TS.run(function repeater() {
-        if (i >= n) {
-          return;
-        }
-        const playerId = targetIds[i];
-        if (PT.checkValid[playerId]) {
-          api.giveItem(playerId, itemName, amount);
-        }
-        i++;
-        TS.run(repeater, interval, groupId);
-      }, delay, groupId);
     } else {
       TS.run(() => {
         while (i < n) {
@@ -1087,25 +1194,636 @@ SC.commands.give = {
     }
   },
 };
-void 0;
+
+SC.commands.take = {
+  _name: "take",
+  _desc: "/take [players] [item] [amount] [delay]",
+  _default: {
+    players: "me",
+    item: null,
+    amount: 1,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    let itemName = (tokens[2] === undefined || tokens[2] === ".") ? _default.item : tokens[2];
+    try {
+      itemName = api.getInitialItemMetadata(itemName).name;
+    } catch {
+      SC.tokenError(command._name, userId, true, "Invalid item: " + itemName);
+      return "Error";
+    }
+
+    const amountRaw = (tokens[3] === undefined || tokens[3] === ".") ? _default.amount : tokens[3];
+    const amount = Number.parseInt(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount || amount <= 0), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[4] === undefined || tokens[4] === ".") ? _default.delay : tokens[4]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], itemName, amount, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, itemName, amount, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        api.removeItemName(targetIds[i], itemName, amount);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            api.removeItemName(playerId, itemName, amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.hp = {
+  _name: "hp",
+  _desc: "/hp [players] [amount] [broadcastHurt] [delay]",
+  _default: {
+    players: "me",
+    amount: 10,
+    broadcastHurt: false,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    const amount = Number.parseInt(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const broadcastHurt = ((tokens[3] === undefined || tokens[3] === ".") ? _default.broadcastHurt : (tokens[3] !== "false" && tokens[3] !== "0"));
+
+    const delay = ((tokens[4] === undefined || tokens[4] === ".") ? _default.delay : tokens[4]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, broadcastHurt, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, broadcastHurt, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        if (api.getHealth(playerId) !== null) {
+          api.applyHealthChange(targetIds[i], amount, undefined, broadcastHurt);
+        }
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId] && api.getHealth(playerId) !== null) {
+            api.applyHealthChange(playerId, amount, undefined, broadcastHurt);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.xp = {
+  _name: "xp",
+  _desc: "/xp [players] [amount] [delay]",
+  _default: {
+    players: "me",
+    amount: 1000,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    const amount = Number.parseFloat(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        api.applyAuraChange(targetIds[i], amount);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            api.applyAuraChange(playerId, amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.sethp = {
+  _name: "sethp",
+  _desc: "/sethp [players] [amount] [changeMax] [delay]",
+  _default: {
+    players: "me",
+    amount: 100,
+    changeMax: false,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    let amount;
+    if (amountRaw === "null") {
+      amount = null;
+    } else {
+      amount = Number.parseInt(amountRaw);
+      if (SC.tokenError(command._name, userId, (amount !== amount || amount < 0), "Invalid amount: " + amountRaw)) {
+        return "Error";
+      }
+    }
+
+    const changeMax = ((tokens[3] === undefined || tokens[3] === ".") ? _default.changeMax : (tokens[3] !== "false" && tokens[3] !== "0"));
+
+    const delay = ((tokens[4] === undefined || tokens[4] === ".") ? _default.delay : tokens[4]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, changeMax, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, changeMax, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        const playerId = targetIds[i];
+        if (changeMax) {
+          api.setClientOption(playerId, "maxHealth", amount);
+        }
+        api.setHealth(playerId, amount);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            if (changeMax) {
+              api.setClientOption(playerId, "maxHealth", amount);
+            }
+            api.setHealth(playerId, amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.setsh = {
+  _name: "setsh",
+  _desc: "/setsh [players] [amount] [delay]",
+  _default: {
+    players: "me",
+    amount: 30,
+    changeMax: false,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    const amount = Number.parseInt(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount || amount < 0), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        const playerId = targetIds[i];
+        if (api.getHealth(playerId) !== null) {
+          api.setShieldAmount(playerId, amount);
+        }
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId] && api.getHealth(playerId) !== null) {
+            api.setShieldAmount(playerId, amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.setxp = {
+  _name: "setxp",
+  _desc: "/setxp [players] [amount] [changeMax] [delay]",
+  _default: {
+    players: "me",
+    amount: 1500,
+    changeMax: false,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    const amount = Number.parseFloat(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount || amount < 0), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const changeMax = ((tokens[3] === undefined || tokens[3] === ".") ? _default.changeMax : (tokens[3] !== "false" && tokens[3] !== "0"));
+
+    const delay = ((tokens[4] === undefined || tokens[4] === ".") ? _default.delay : tokens[4]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, changeMax, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, changeMax, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        const playerId = targetIds[i];
+        if (changeMax) {
+          const auraPerLevel = api.getAuraInfo(playerId).auraPerLevel;
+          api.setClientOption(playerId, "maxAuraLevel", Math.ceil(amount / auraPerLevel));
+        }
+        api.setTotalAura(playerId, amount);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            if (changeMax) {
+              const auraPerLevel = api.getAuraInfo(playerId).auraPerLevel;
+              api.setClientOption(playerId, "maxAuraLevel", Math.ceil(amount / auraPerLevel));
+            }
+            api.setTotalAura(playerId, amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.setmaxhp = {
+  _name: "setmaxhp",
+  _desc: "/setmaxhp [players] [amount] [delay]",
+  _default: {
+    players: "me",
+    amount: 100,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    let amount;
+    if (amountRaw === "null") {
+      amount = null;
+    } else {
+      amount = Number.parseInt(amountRaw);
+      if (SC.tokenError(command._name, userId, (amount !== amount || amount < 0), "Invalid amount: " + amountRaw)) {
+        return "Error";
+      }
+    }
+
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        api.setClientOption(targetIds[i], "maxHealth", amount);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            api.setClientOption(playerId, "maxHealth", amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.setmaxxp = {
+  _name: "setmaxxp",
+  _desc: "/setmaxxp [players] [amount] [delay]",
+  _default: {
+    players: "me",
+    amount: 30000,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    const amount = Number.parseFloat(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount || amount < 0), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        const playerId = targetIds[i];
+        const auraPerLevel = api.getAuraInfo(playerId).auraPerLevel;
+        api.setClientOption(playerId, "maxAuraLevel", Math.ceil(amount / auraPerLevel));
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            const auraPerLevel = api.getAuraInfo(playerId).auraPerLevel;
+            api.setClientOption(playerId, "maxAuraLevel", Math.ceil(amount / auraPerLevel));
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.perlvlxp = {
+  _name: "perlvlxp",
+  _desc: "/perlvlxp [players] [amount] [delay]",
+  _default: {
+    players: "me",
+    amount: 100,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const amountRaw = (tokens[2] === undefined || tokens[2] === ".") ? _default.amount : tokens[2];
+    const amount = Number.parseFloat(amountRaw);
+    if (SC.tokenError(command._name, userId, (amount !== amount || amount <= 0), "Invalid amount: " + amountRaw)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], amount, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, amount, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        api.setClientOption(targetIds[i], "auraPerLevel", amount);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            api.setClientOption(playerId, "auraPerLevel", amount);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.tppos = {
+  _name: "tppos",
+  _desc: "/tppos [players] [x] [y] [z] [delay]",
+  _default: {
+    players: "me",
+    x: 0,
+    y: 0,
+    z: 0,
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const rawX = (tokens[2] === undefined || tokens[2] === ".") ? _default.x : tokens[2];
+    const rawY = (tokens[3] === undefined || tokens[3] === ".") ? _default.y : tokens[3];
+    const rawZ = (tokens[4] === undefined || tokens[4] === ".") ? _default.z : tokens[4];
+    const x = Number.parseFloat(rawX);
+    const y = Number.parseFloat(rawY);
+    const z = Number.parseFloat(rawZ);
+    if (SC.tokenError(command._name, userId, (x !== x || y !== y || z !== z), "Invalid coordinates: " + rawX + " " + rawY + " " + rawZ)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[5] === undefined || tokens[5] === ".") ? _default.delay : tokens[5]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], x, y, z, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, x, y, z, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    if (!delay) {
+      while (i < n) {
+        api.setPosition(targetIds[i], x, y, z);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            api.setPosition(playerId, x, y, z);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
+
+SC.commands.tp = {
+  _name: "tp",
+  _desc: "/tp [players] [toPlayer] [delay]",
+  _default: {
+    players: "me",
+    toPlayer: "me",
+    delay: 0,
+  },
+  _cmd: function (userId, tokens) {
+    const command = this;
+    const _default = command._default;
+
+    const resolvedIds = SC.resolveNames(userId, (tokens[1] === undefined || tokens[1] === ".") ? _default.players : tokens[1]);
+    if (SC.playersTokenError(command._name, userId, resolvedIds)) {
+      return "Error";
+    }
+
+    const resolvedOneId = SC.resolveOneName(userId, (tokens[2] === undefined || tokens[2] === ".") ? _default.toPlayer : tokens[2]);
+    if (SC.onePlayerTokenError(command._name, userId, resolvedOneId)) {
+      return "Error";
+    }
+
+    const delay = ((tokens[3] === undefined || tokens[3] === ".") ? _default.delay : tokens[3]) | 0;
+
+    const groupId = "SC" + (++SC._operationId);
+    command._run(resolvedIds[0], resolvedOneId, delay, groupId);
+    return groupId;
+  },
+  _run: function (targetIds, toPlayerId, delay, groupId) {
+    let i = 0, n = targetIds.length;
+    const toPosition = api.getPosition(toPlayerId);
+    if (!delay) {
+      while (i < n) {
+        api.setPosition(targetIds[i], toPosition);
+        i++;
+      }
+    } else {
+      TS.run(() => {
+        while (i < n) {
+          const playerId = targetIds[i];
+          if (PT.checkValid[playerId]) {
+            api.setPosition(playerId, toPosition);
+          }
+          i++;
+        }
+      }, delay, groupId);
+    }
+  },
+};
 
 SC.establish();
 
 Object.seal(SC);
 void 0;
 
-// -------------------- SETUP --------------------
+// ---------- SETUP ----------
 
 tick = () => {
   PT.tick();
   SC.tick();
   TS.tick();
-  // other logic
+  // ...
 };
 
 PT.join = (playerId, cache) => {
   SC.onPlayerJoin(playerId);
   // other interruption-safe logic
+
+  // ----- EXAMPLE -----
+  SC.perms.setRank(api.ownerDbId, "owner");
 };
 
 PT.leave = (playerId, cache) => {
@@ -1114,23 +1832,33 @@ PT.leave = (playerId, cache) => {
 };
 
 SC.install.fn = (cache) => {
-  // interruption safe logic to run once
+  // interruption safe logic to run once for everyone
+
+  // ----- EXAMPLE -----
+  SC.ranks.create("owner", [
+    "help", "cmdout", "cancel",
+    "kick", "give", "take",
+    "hp", "xp",
+    "sethp", "setsh", "setxp",
+    "setmaxhp", "setmaxxp", "perlvlxp",
+    "tppos", "tp",
+  ]);
 };
 // SC.install.cache = {}; // optional
 SC.install.done = false;
 
 onPlayerJoin = (playerId) => {
   PT.onPlayerJoin(playerId);
-  // other logic
+  // ...
 };
 onPlayerLeave = (playerId) => {
   PT.onPlayerLeave(playerId);
-  // other logic
+  // ...
 };
 playerCommand = (playerId, command) => {
   const cmdout = SC.playerCommand(playerId, command);
   if (cmdout !== null) {
     return true;
   }
-  // other logic
+  // ...
 };
