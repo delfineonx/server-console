@@ -339,6 +339,8 @@
 
   Object.seal(_PT);
   globalThis.PT = _PT;
+
+  void 0;
 }
 
 // Server Console (core)
@@ -400,6 +402,30 @@
   };
   const _TS = globalThis.TS;
   const _PT = globalThis.PT;
+
+  const _consoleInfoHeader = "" +
+    "\u2580\u2584\u2580\u2584\u2580 Server Console \u2580\u2584\u2580\u2584\u2580\n" +
+    "         \u300c \u2726 delfineonx \u2726 \u300d\n" +
+    "\n";
+
+  const _consoleInfoFooter = "" +
+    "\u30fb\u30fb\u30fb\u30fb\u30fb Parameters \u30fb\u30fb\u30fb\u30fb\u30fb\n" +
+    "- [players]:\n" +
+    "  \`all\` \u2014 everyone in lobby;\n" +
+    "  \`me\` \u2014 player who executed the command;\n" +
+    "  \`-me\` \u2014 everyone except one who executed the command;\n" +
+    "  \`name1\` \u2014 player with \`name1\`;\n" +
+    "  \`-name1\` \u2014 everyone except player with \`name1\`;\n" +
+    "  \`[name1 name2]\` \u2014 players with specified names;\n" +
+    "  \`[-name1 -name2]\` \u2014 everyone except specified players.\n" +
+    "  NOTE: supports partial names with length of \`>= 4\` characters.\n" +
+    "\n" +
+    "- others:\n" +
+    "  use as \`value\` or \`[value with spaces]\`.\n" +
+    "\n" +
+    "- default values:\n" +
+    "  use dot symbol (`.`) for default values,\n" +
+    "  or omit parameters from the end.\n";
 
   const _commands = _SC.commands;
   const _nameById = _SC.playerNameById;
@@ -560,8 +586,8 @@
     }
     return names;
   };
-  const _makeHelpInfo = () => {
-    let info = "";
+  const _makeConsoleInfoCommands = () => {
+    let info = "\u30fb\u30fb\u30fb\u30fb\u30fb Commands \u30fb\u30fb\u30fb\u30fb\u30fb\n";
     for (const name in _commands) {
       const command = _commands[name];
       const _default = command._default;
@@ -896,9 +922,9 @@
     return true;
   };
 
-  _commands.help = {
-    _name: "help",
-    _desc: "/help [players] [delay]",
+  _commands.console = {
+    _name: "console",
+    _desc: "/console [players] [delay]",
     _default: {
       players: "me",
       delay: 0,
@@ -919,11 +945,13 @@
       return groupId;
     },
     _run: function (targetIds, delay, groupId) {
-      const info = _makeHelpInfo();
+      const mainInfo = _consoleInfoHeader + _makeConsoleInfoCommands();
       let i = 0, n = targetIds.length;
       if (!delay) {
         while (i < n) {
-          api.sendMessage(targetIds[i], info, { color: "#84e0ff" });
+          const playerId = targetIds[i];
+          api.sendMessage(playerId, mainInfo, { color: "#84e0ff" });
+          api.sendMessage(playerId, _consoleInfoFooter, { color: "#84e0ff" });
           i++;
         }
       } else {
@@ -931,7 +959,8 @@
           while (i < n) {
             const playerId = targetIds[i];
             if (_PT.checkValid[playerId]) {
-              api.sendMessage(playerId, info, { color: "#84e0ff" });
+              api.sendMessage(playerId, mainInfo, { color: "#84e0ff" });
+              api.sendMessage(playerId, _consoleInfoFooter, { color: "#84e0ff" });
             }
             i++;
           }
@@ -1070,14 +1099,14 @@
           out = command._cmd(userId, tokens);
         } catch (error) {
           out = "Error";
-          api.sendMessage(userId, "Server Console: \"/" + name + "\" execution: " + error.name + ": " + error.message, { color: "#ff9d87" });
+          api.sendMessage(userId, "Server Console: \"/" + command._name + "\" execution: " + error.name + ": " + error.message, { color: "#ff9d87" });
         }
         if (out !== "Error") {
           data.lastCmdGroupId = out;
         }
       } else {
         out = "AccessDenied";
-        api.sendMessage(userId, "Server Console: \"/" + name + "\": Access denied", { color: "#ff9d87" });
+        api.sendMessage(userId, "Server Console: \"/" + command._name + "\": Access denied", { color: "#ff9d87" });
       }
     }
     if (data.showCmdOut) {
@@ -1836,7 +1865,7 @@ SC.install.fn = (cache) => {
 
   // ----- EXAMPLE -----
   SC.ranks.create("owner", [
-    "help", "cmdout", "cancel",
+    "console", "cmdout", "cancel",
     "kick", "give", "take",
     "hp", "xp",
     "sethp", "setsh", "setxp",
